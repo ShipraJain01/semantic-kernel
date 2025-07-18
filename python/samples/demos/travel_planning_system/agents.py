@@ -1,13 +1,16 @@
 # Copyright (c) Microsoft. All rights reserved.
 
 from semantic_kernel.agents import ChatCompletionAgent
-from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
 from semantic_kernel.functions import kernel_function
+from reasoning_agent import create_reasoning_compatible_agent
 
 _BASE_SYSTEM_MSG = (
     "You are a helpful travel planning assistant. Always be professional and provide accurate information."
 )
 
+#from semantic_kernel.agents.chat_completion.chat_completion_agent import ChatCompletionAgent
+#from semantic_kernel.agents.chat_completion.reasoning_compatible_agent import ReasoningCompatibleAgent
+from semantic_kernel.contents import AuthorRole, ChatMessageContent
 
 class FlightPlugin:
     @kernel_function
@@ -52,59 +55,52 @@ class PlanningPlugin:
 
 def get_agents() -> dict[str, ChatCompletionAgent]:
     """Creates and returns a set of agents for the travel planning system."""
-    # 1. Conversation Manager Agent
-    conversation_manager = ChatCompletionAgent(
+    print("Using ReasoningCompatibleAgent (auto-detects standard vs reasoning models)")
+    
+    # Create reasoning-compatible agents that auto-detect model type
+    conversation_manager = create_reasoning_compatible_agent(
         name="conversation_manager",
         description="Manages conversation flow and coordinates between agents",
-        instructions=f"{_BASE_SYSTEM_MSG} You coordinate the conversation and ensure users get comprehensive help.",
-        service=AzureChatCompletion(),
+        instructions="You are a conversation manager for a travel planning system. "
+                    "Coordinate between different agents to help users plan their trips.",
     )
 
-    # 2. Travel Planner Agent
-    planner = ChatCompletionAgent(
+    planner = create_reasoning_compatible_agent(
         name="planner",
         description="Creates comprehensive travel plans including flights, hotels, and activities",
-        instructions=(
-            f"{_BASE_SYSTEM_MSG} You create detailed travel plans that include flights, hotels, and activities."
-        ),
-        service=AzureChatCompletion(),
+        instructions="You are a travel planner. Create detailed travel itineraries "
+                    "including flights, hotels, and activities based on user preferences.",
         plugins=[PlanningPlugin()],
     )
 
-    # 3. Router Agent
-    router = ChatCompletionAgent(
+    router = create_reasoning_compatible_agent(
         name="router",
         description="Routes tasks to appropriate specialized agents",
-        instructions=f"{_BASE_SYSTEM_MSG} You analyze plans and delegate tasks to the right specialized agents.",
-        service=AzureChatCompletion(),
+        instructions="You are a router agent. Analyze user requests and direct them "
+                    "to the most appropriate specialist agent.",
     )
 
-    # 4. Destination Expert Agent
-    destination_expert = ChatCompletionAgent(
+    destination_expert = create_reasoning_compatible_agent(
         name="destination_expert",
         description="Expert in destination recommendations and local information",
-        instructions=(
-            f"{_BASE_SYSTEM_MSG} You provide expert advice on destinations, attractions, and local experiences."
-        ),
-        service=AzureChatCompletion(),
+        instructions="You are a destination expert. Provide detailed information about "
+                    "travel destinations, local attractions, and travel tips.",
         plugins=[PlanningPlugin()],
     )
 
-    # 5. Flight Agent
-    flight_agent = ChatCompletionAgent(
+    flight_agent = create_reasoning_compatible_agent(
         name="flight_agent",
         description="Specializes in flight booking",
-        instructions=f"{_BASE_SYSTEM_MSG} You handle all flight-related tasks including booking.",
-        service=AzureChatCompletion(),
+        instructions="You are a flight booking specialist. Help users search for "
+                    "and book flights that meet their travel needs.",
         plugins=[FlightPlugin()],
     )
 
-    # 6. Hotel Agent
-    hotel_agent = ChatCompletionAgent(
+    hotel_agent = create_reasoning_compatible_agent(
         name="hotel_agent",
         description="Specializes in hotel booking",
-        instructions=f"{_BASE_SYSTEM_MSG} You handle all hotel-related tasks including booking.",
-        service=AzureChatCompletion(),
+        instructions="You are a hotel booking specialist. Help users search for "
+                    "and book hotels that meet their accommodation needs.",
         plugins=[HotelPlugin()],
     )
 
