@@ -30,6 +30,22 @@ TOOL_DESCRIPTION = "gen_ai.tool.description"
 TOOL_NAME = "gen_ai.tool.name"
 ADDRESS = "server.address"
 
+# shiprajain01 Add these constants if they don't already exist:
+MODEL_VERSION = "gen_ai.model.version"
+SYSTEM_PROMPT_VERSION = "gen_ai.system.prompt.version"
+PRESENCE_PENALTY = "gen_ai.request.presence_penalty"
+CHOICE_COUNT = "gen_ai.request.choice.count"
+
+# Additional attributes
+MODEL_VERSION = "gen_ai.model.version"
+SYSTEM_PROMPT_VERSION = "gen_ai.system.prompt.version"
+PRESENCE_PENALTY = "gen_ai.request.presence_penalty"
+CHOICE_COUNT = "gen_ai.request.choice.count"
+REQUEST_MODEL = "gen_ai.request.model"  # This is the same as MODEL
+RESPONSE_MODEL = "gen_ai.response.model"
+#FINISH_REASONS = "gen_ai.response.finish_reasons"  # Plural form
+
+
 # Activity events
 EVENT_NAME = "event.name"
 SYSTEM_MESSAGE = "gen_ai.system.message"
@@ -49,3 +65,5 @@ ROLE_EVENT_MAP = {
     AuthorRole.ASSISTANT: ASSISTANT_MESSAGE,
     AuthorRole.TOOL: TOOL_MESSAGE,
 }
+
+

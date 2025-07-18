@@ -34,11 +34,11 @@ from semantic_kernel.contents import (
 )
 from semantic_kernel.functions.kernel_arguments import KernelArguments
 
-langfuse = Langfuse(
-    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
-    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
-    host="https://us.cloud.langfuse.com",
-)
+# langfuse = Langfuse(
+#     secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+#     public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+#     host="https://us.cloud.langfuse.com",
+# )
 
 
 if sys.version_info >= (3, 12):

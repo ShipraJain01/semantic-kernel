@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from semantic_kernel.kernel import Kernel
 
 
-DEFAULT_MAX_AUTO_INVOKE_ATTEMPTS = 5
+DEFAULT_MAX_AUTO_INVOKE_ATTEMPTS = 15
 
 logger = logging.getLogger(__name__)
 

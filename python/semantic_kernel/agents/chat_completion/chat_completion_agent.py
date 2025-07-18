@@ -34,6 +34,7 @@ from semantic_kernel.prompt_template.prompt_template_config import PromptTemplat
 from semantic_kernel.utils.telemetry.agent_diagnostics.decorators import (
     trace_agent_get_response,
     trace_agent_invocation,
+    trace_agent_invocation_streaming
 )
 
 if TYPE_CHECKING:
@@ -361,7 +362,8 @@ class ChatCompletionAgent(DeclarativeSpecMixin, Agent):
         ):
             yield AgentResponseItem(message=response, thread=thread)
 
-    @trace_agent_invocation
+    #@trace_agent_invocation - shiprajain01
+    @trace_agent_invocation_streaming
     @override
     async def invoke_stream(
         self,

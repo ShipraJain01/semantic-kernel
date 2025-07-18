@@ -252,7 +252,7 @@ class ChatCompletionClientBase(AIServiceClientBase, ABC):
                 yield streaming_chat_message_contents
             return
 
-        # Auto invoke loop
+        #Auto invoke loop
         with use_span(self._start_auto_function_invocation_activity(kernel, settings), end_on_exit=True) as _:
             for request_index in range(settings.function_choice_behavior.maximum_auto_invoke_attempts):
                 # Hold the messages, if there are more than one response, it will not be used, so we flatten

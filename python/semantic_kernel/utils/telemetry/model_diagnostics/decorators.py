@@ -20,6 +20,13 @@ from semantic_kernel.utils.feature_stage_decorator import experimental
 from semantic_kernel.utils.telemetry.model_diagnostics import gen_ai_attributes
 from semantic_kernel.utils.telemetry.model_diagnostics.model_diagnostics_settings import ModelDiagnosticSettings
 
+# Import for agent span tracking
+try:
+    from semantic_kernel.utils.telemetry.agent_diagnostics.decorators import get_current_agent_span
+except ImportError:
+    def get_current_agent_span():
+        return None
+
 if TYPE_CHECKING:
     from semantic_kernel.connectors.ai.chat_completion_client_base import ChatCompletionClientBase
     from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecutionSettings
@@ -182,6 +189,11 @@ def trace_streaming_chat_completion(model_provider: str) -> Callable:
                 ),
                 end_on_exit=True,
             ) as current_span:
+                # Capture LLM span context for agent tracking
+                agent_span = get_current_agent_span()
+                if agent_span:
+                    _set_llm_span_context_on_agent(current_span, agent_span)
+                
                 _set_completion_input(model_provider, chat_history)
                 try:
                     async for streaming_chat_message_contents in completion_func(*args, **kwargs):
@@ -205,6 +217,20 @@ def trace_streaming_chat_completion(model_provider: str) -> Callable:
         return wrapper_decorator
 
     return inner_trace_streaming_chat_completion
+
+
+def _set_llm_span_context_on_agent(llm_span: Span, agent_span: Span) -> None:
+    """Set the LLM span context as an attribute on the agent span."""
+    try:
+        llm_context = llm_span.get_span_context()
+        child_llm_span_info = {
+            'trace_id': format(llm_context.trace_id, '032x'),
+            'span_id': format(llm_context.span_id, '016x')
+        }
+        agent_span.set_attribute("child_LLM_SPAN", json.dumps(child_llm_span_info))
+    except Exception:
+        # Silently fail if there's any issue with setting the attribute
+        pass
 
 
 @experimental
@@ -345,6 +371,10 @@ def _get_completion_span(
     if service_url:
         span.set_attribute(gen_ai_attributes.ADDRESS, service_url)
 
+    # Set hardcoded version attributes
+    span.set_attribute(gen_ai_attributes.MODEL_VERSION, "v1.0")
+    span.set_attribute(gen_ai_attributes.SYSTEM_PROMPT_VERSION, "v1.0")
+
     # TODO(@glahaye): we'll need to have a way to get these attributes from model
     # providers other than OpenAI (for example if the attributes are named differently)
     if execution_settings:
@@ -357,6 +387,9 @@ def _get_completion_span(
             "temperature": gen_ai_attributes.TEMPERATURE,
             "top_k": gen_ai_attributes.TOP_K,
             "top_p": gen_ai_attributes.TOP_P,
+            # Add new attributes
+            "presence_penalty": gen_ai_attributes.PRESENCE_PENALTY,
+            "n": gen_ai_attributes.CHOICE_COUNT,  # 'n' parameter maps to choice.count
         }
         for attribute_name, attribute_key in attribute_name_map.items():
             attribute = execution_settings.extension_data.get(attribute_name)
