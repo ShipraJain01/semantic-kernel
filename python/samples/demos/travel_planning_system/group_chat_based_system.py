@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import sys
+import uuid
+from datetime import datetime
 
 from langfuse import Langfuse
 from opentelemetry import trace
@@ -14,6 +16,18 @@ from pydantic import Field
 from agents import get_agents
 from observability import enable_observability
 from reasoning_agent import create_reasoning_compatible_agent
+
+# ✅ Import the enhanced memory system
+from enhanced_memory_system import (
+    SharedMemoryManager, 
+    AgentMemoryContext, 
+    RAGIntegrationManager,
+    get_shared_memory_manager,
+    STATE_MANAGEMENT_EVENT,
+    AGENT_INTERACTION_EVENT,
+    SYSTEM
+)
+
 from semantic_kernel.agents import (
     BooleanResult,
     ChatCompletionAgent,
@@ -34,31 +48,54 @@ from semantic_kernel.contents import (
 )
 from semantic_kernel.functions.kernel_arguments import KernelArguments
 
+# ✅ Add logger for events
+logger = logging.getLogger(__name__)
+
 # langfuse = Langfuse(
 #     secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
 #     public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
 #     host="https://us.cloud.langfuse.com",
 # )
 
-
 if sys.version_info >= (3, 12):
     from typing import override  # pragma: no cover
 else:
     from typing_extensions import override  # pragma: no cover
 
+# ✅ Global memory components - will be initialized in main()
+shared_memory_manager = None
+rag_manager = None
+
+# Global conversation context
+current_conversation_id = str(uuid.uuid4())
+current_session_metadata = {
+    "session_start": datetime.now().isoformat(),
+    "user_preferences": {},
+    "planning_constraints": {}
+}
 
 # Flag to indicate if a new message is being received
 is_new_message = True
 
 
-def streaming_agent_response_callback(message: StreamingChatMessageContent, is_final: bool) -> None:
-    """Observer function to print the messages from the agents with minimal telemetry."""
+def enhanced_streaming_agent_response_callback(message: StreamingChatMessageContent, is_final: bool) -> None:
+    """Enhanced streaming callback with memory tracking via events."""
     global is_new_message
 
     # Only create span for final messages to reduce duplicate spans
     if is_final and (message.content or message.items):
         tracer = trace.get_tracer(__name__)
         with tracer.start_as_current_span("streaming_message_final") as stream_span:
+            
+            # ✅ Create memory context
+            memory_context = AgentMemoryContext(
+                agent_id=message.name or "unknown_agent",
+                conversation_id=current_conversation_id,
+                trace_id=stream_span.get_span_context().trace_id.to_bytes(16, 'big').hex(),
+                span_id=stream_span.get_span_context().span_id.to_bytes(8, 'big').hex(),
+                session_metadata=current_session_metadata
+            )
+            
             stream_span.set_attributes({
                 "gen_ai.operation.name": "memory_operation",
                 "gen_ai.memory.operation_type": "write",
@@ -66,23 +103,16 @@ def streaming_agent_response_callback(message: StreamingChatMessageContent, is_f
                 "message.agent_name": message.name,
                 "message.content_length": len(message.content) if message.content else 0,
                 "message.processing_complete": True,
+                "conversation.id": memory_context.conversation_id,
             })
 
-            # ENHANCED: Add input/output visibility for Langfuse
+            # Store message in agent's local memory
             if message.content:
-                # Add the actual message content as an event for Langfuse visibility
-                stream_span.add_event(
-                    "gen_ai.content.completion",
-                    {
-                        "gen_ai.completion": str(message.content)[:1000],  # Truncate for safety
-                        "gen_ai.assistant.message": str(message.content)[:1000],
-                        "output.agent": message.name,
-                        "output.type": "streaming_final",
-                        "output.role": str(message.role),
-                    },
+                asyncio.create_task(
+                    _store_agent_message_memory(message, memory_context)
                 )
 
-            # ENHANCED: Capture function calls and results
+            # Enhanced function call and result tracking  
             function_calls = []
             function_results = []
 
@@ -90,13 +120,32 @@ def streaming_agent_response_callback(message: StreamingChatMessageContent, is_f
                 if isinstance(item, FunctionCallContent):
                     function_calls.append({
                         "function": item.name,
-                        "arguments": str(item.arguments)[:500],  # Truncate arguments
+                        "arguments": str(item.arguments)[:500],
                     })
                 elif isinstance(item, FunctionResultContent):
                     function_results.append({
                         "function": item.name,
-                        "result": str(item.result)[:500],  # Truncate results
+                        "result": str(item.result)[:500],
                     })
+
+            if function_calls or function_results:
+                asyncio.create_task(
+                    _store_function_call_memory(function_calls, function_results, memory_context)
+                )
+
+            # ENHANCED: Add input/output visibility for Langfuse
+            if message.content:
+                stream_span.add_event(
+                    "gen_ai.content.completion",
+                    {
+                        "gen_ai.completion": str(message.content)[:1000],
+                        "gen_ai.assistant.message": str(message.content)[:1000],
+                        "output.agent": message.name,
+                        "output.type": "streaming_final",
+                        "output.role": str(message.role),
+                        "memory.stored": True,
+                    },
+                )
 
             if function_calls:
                 stream_span.add_event(
@@ -131,6 +180,76 @@ def streaming_agent_response_callback(message: StreamingChatMessageContent, is_f
     if is_final:
         print()
         is_new_message = True
+
+
+async def _store_agent_message_memory(message: StreamingChatMessageContent, memory_context: AgentMemoryContext):
+    """Store agent message in local memory."""
+    try:
+        agent_store = shared_memory_manager.get_agent_memory(memory_context.agent_id)
+        
+        from semantic_kernel.memory.memory_record import MemoryRecord
+        import numpy as np
+        
+        message_record = MemoryRecord(
+            is_reference=False,
+            external_source_name="agent_response",
+            id=f"msg_{uuid.uuid4()}",
+            description=f"Response from {memory_context.agent_id}",
+            text=message.content,
+            additional_metadata=json.dumps({
+                "agent_id": memory_context.agent_id,
+                "conversation_id": memory_context.conversation_id,
+                "message_type": "response",
+                "role": str(message.role),
+                "timestamp": datetime.now().isoformat()
+            }),
+            embedding=np.zeros(1536)  # Placeholder embedding
+        )
+        
+        await shared_memory_manager.ensure_agent_collections(memory_context.agent_id)
+        await agent_store.upsert_with_telemetry(
+            f"{memory_context.agent_id}_working_memory",
+            message_record,
+            memory_context
+        )
+        
+    except Exception as e:
+        logging.error(f"Failed to store agent message memory: {e}")
+
+
+async def _store_function_call_memory(function_calls: list, function_results: list, memory_context: AgentMemoryContext):
+    """Store function call information in shared memory."""
+    try:
+        from semantic_kernel.memory.memory_record import MemoryRecord
+        import numpy as np
+        
+        if function_calls or function_results:
+            function_record = MemoryRecord(
+                is_reference=False,
+                external_source_name="function_execution",
+                id=f"func_{uuid.uuid4()}",
+                description=f"Function execution by {memory_context.agent_id}",
+                text=json.dumps({
+                    "function_calls": function_calls,
+                    "function_results": function_results
+                }),
+                additional_metadata=json.dumps({
+                    "agent_id": memory_context.agent_id,
+                    "conversation_id": memory_context.conversation_id,
+                    "execution_type": "tool_usage",
+                    "timestamp": datetime.now().isoformat()
+                }),
+                embedding=np.zeros(1536)
+            )
+            
+            await shared_memory_manager.shared_store.upsert_with_telemetry(
+                "agent_interactions",
+                function_record,
+                memory_context
+            )
+            
+    except Exception as e:
+        logging.error(f"Failed to store function call memory: {e}")
 
 
 def human_response_function(chat_histoy: ChatHistory) -> ChatMessageContent:
@@ -204,7 +323,6 @@ class AgentBaseGroupChatManager(GroupChatManager):
 
             return result
 
-
     @override
     async def should_terminate(self, chat_history: ChatHistory) -> BooleanResult:
         """Provide concrete implementation for should_terminate."""
@@ -233,17 +351,25 @@ class AgentBaseGroupChatManager(GroupChatManager):
         response = await self.agent.get_response(messages, arguments=KernelArguments(settings=settings))
         return BooleanResult.model_validate_json(response.message.content)
   
-
     @override
     async def select_next_agent(
         self,
         chat_history: ChatHistory,
         participant_descriptions: dict[str, str],
     ) -> StringResult:
-        """Provide concrete implementation for selecting the next agent to speak."""
+        """✅ ENHANCED: Select next agent with memory events and context propagation."""
         tracer = trace.get_tracer(__name__)
 
         with tracer.start_as_current_span("plan_task") as selection_span:
+            # ✅ Create memory context for this selection
+            memory_context = AgentMemoryContext(
+                agent_id=self.agent.name,
+                conversation_id=current_conversation_id,
+                trace_id=selection_span.get_span_context().trace_id.to_bytes(16, 'big').hex(),
+                span_id=selection_span.get_span_context().span_id.to_bytes(8, 'big').hex(),
+                session_metadata=current_session_metadata
+            )
+            
             selection_span.set_attributes({
                 "gen_ai.planning.type": "plan_task",
                 "gen_ai.planning.complexity": "moderate",
@@ -252,7 +378,17 @@ class AgentBaseGroupChatManager(GroupChatManager):
                 "agent.selection.total_participants": len(participant_descriptions),
                 "agent.selection.available_agents": list(participant_descriptions.keys()),
                 "agent.selection.conversation_length": len(chat_history.messages),
+                "conversation.id": memory_context.conversation_id,
             })
+
+            # ✅ Convert chat history to serializable format for events
+            chat_history_data = []
+            for msg in chat_history.messages[-5:]:  # Last 5 messages
+                chat_history_data.append({
+                    "role": str(msg.role),
+                    "content": msg.content[:200] if msg.content else "",  # Truncate
+                    "agent": getattr(msg, 'name', 'unknown')
+                })
 
             messages = chat_history.messages[:]
             messages.append(
@@ -272,6 +408,7 @@ class AgentBaseGroupChatManager(GroupChatManager):
             settings = AzureChatPromptExecutionSettings()
             settings.response_format = StringResult
 
+            # ✅ THIS IS WHERE LLM MAKES THE DECISION - IN LLM SPAN
             response = await self.agent.get_response(messages, arguments=KernelArguments(settings=settings))
             result = StringResult.model_validate_json(response.message.content)
 
@@ -298,6 +435,24 @@ class AgentBaseGroupChatManager(GroupChatManager):
                         f"Selected agent '{selected_agent}' is not in the list of participants: "
                         f"{list(participant_descriptions.keys())}. Raw response: {response.message.content[:200]}"
                     )
+
+            # ✅ PROPAGATE CONTEXT AND EMIT EVENTS
+            context_data = {
+                "selection_reason": result.reason,
+                "conversation_state": "agent_transition",
+                "last_message_summary": chat_history.messages[-1].content[:200] if chat_history.messages else "",
+                "participant_count": len(participant_descriptions),
+                "selection_timestamp": datetime.now().isoformat()
+            }
+            
+            # ✅ PROPAGATE CONTEXT - EVENTS EMITTED IN LLM SPAN
+            await shared_memory_manager.propagate_context_to_agent(
+                source_agent=self.agent.name,
+                target_agent=selected_agent,
+                context_data=context_data,
+                memory_context=memory_context,
+                chat_history=chat_history_data  # ✅ Pass chat history for context propagation event
+            )
 
             selection_span.set_attributes({
                 "agent.selection.selected": selected_agent,
@@ -364,13 +519,19 @@ class AgentBaseGroupChatManager(GroupChatManager):
 @enable_observability
 async def main():
     """Main function to run the agents with comprehensive telemetry."""
+    global shared_memory_manager, rag_manager
+    
+    # ✅ Initialize memory components with async
+    shared_memory_manager = get_shared_memory_manager()
+    rag_manager = RAGIntegrationManager(shared_memory_manager)
+    
     tracer = trace.get_tracer(__name__)
 
     # Create comprehensive session context
     with tracer.start_as_current_span("travel_planning_session") as session_span:
         session_span.set_attributes({
             "user.id": "demo_user_enhanced",
-            "conversation.id": "conv_enhanced_001",
+            "conversation.id": current_conversation_id,
             "session.type": "enhanced_multi_agent_demo",
             # Langfuse-specific attributes
             "langfuse.trace.type": "multi_agent_orchestration",
@@ -388,7 +549,7 @@ async def main():
                 agents["hotel_agent"],
             ],
             manager=AgentBaseGroupChatManager(max_rounds=20, human_response_function=human_response_function),
-            streaming_agent_response_callback=streaming_agent_response_callback,
+            streaming_agent_response_callback=enhanced_streaming_agent_response_callback,
         )
 
         # 2. Comprehensive task execution with telemetry
@@ -463,6 +624,20 @@ async def main():
                     "langfuse.output": str(value)[:2000],  # Langfuse-specific
                 },
             )
+
+        # ✅ Print final memory summary
+        print("\n" + "="*60)
+        print("📊 STATE MANAGEMENT DATA SUMMARY")
+        print("="*60)
+        
+        all_state_data = shared_memory_manager.get_all_state_management_data()
+        print(f"Total state management events: {len(all_state_data)}")
+        
+        for event_type in ["context_propagation", "local_agent_memory", "rag_knowledge"]:
+            type_events = [e for e in all_state_data if e.get("type") == event_type]
+            print(f"- {event_type}: {len(type_events)} events")
+        
+        print("="*60)
 
         # 4. Stop the runtime after the invocation is complete
         await runtime.stop_when_idle()
